@@ -47,15 +47,23 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         payableDays: slip.payableDays,
         lopDays: slip.lopDays,
         pay: {
+          // A payslip stores what the employee was paid, not every
+          // figure the engine worked out on the way there. The fields
+          // below that read zero are employer-side numbers the payslip
+          // does not keep: PF administration charges, and the two wage
+          // bases. They are recomputed for a statutory return from the
+          // stored contributions, never from this.
           lines: [],
           grossPaise: slip.grossPaise,
           deductionsPaise: slip.deductionsPaise,
           netPaise: slip.netPaise,
-          employerCostPaise: slip.grossPaise + slip.pfEmployerPaise + slip.pfPensionPaise + slip.esiEmployerPaise,
+          employerCostPaise:
+            slip.grossPaise + slip.pfEmployerPaise + slip.pfPensionPaise + slip.esiEmployerPaise,
           pfWagePaise: 0,
           pfEmployeePaise: slip.pfEmployeePaise,
           pfEmployerPaise: slip.pfEmployerPaise,
           pfPensionPaise: slip.pfPensionPaise,
+          pfAdminPaise: 0,
           esiGrossPaise: 0,
           esiEmployeePaise: slip.esiEmployeePaise,
           esiEmployerPaise: slip.esiEmployerPaise,
