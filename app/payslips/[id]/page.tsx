@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { canSeeSalaries, requireUser } from "@/lib/auth";
 import { inWords, rupees } from "@/lib/money";
 import { fmtMonth } from "@/lib/format";
 
@@ -19,8 +20,12 @@ export const dynamic = "force-dynamic";
 
 export default async function PayslipPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const slip = await db.payslip.findUnique({
-    where: { id },
+  const user = await requireUser();
+  if (!canSeeSalaries(user.role)) notFound();
+
+  const slip = await db.payslip.findFirst({
+    // Through the run, which is what carries the company.
+    where: { id, run: { companyId: user.companyId } },
     include: { lines: { orderBy: { position: "asc" } }, run: { include: { company: true } } },
   });
   if (!slip) notFound();

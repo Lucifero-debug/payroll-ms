@@ -1,6 +1,7 @@
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { requirePayroll, requireUser } from "@/lib/auth";
 import { fmtMonth, monthFromValue, monthValue } from "@/lib/format";
 import { daysInMonth, monthStart } from "@/lib/run";
 
@@ -16,10 +17,18 @@ export const dynamic = "force-dynamic";
 
 async function saveAttendance(formData: FormData) {
   "use server";
+  const user = await requirePayroll();
   const period = monthFromValue(String(formData.get("period")));
-  const ids = formData.getAll("employeeId").map(String);
+  const submitted = formData.getAll("employeeId").map(String);
 
-  for (const id of ids) {
+  // Only ids that belong to this company, read from the database rather
+  // than trusted from the form.
+  const own = await db.employee.findMany({
+    where: { id: { in: submitted }, companyId: user.companyId },
+    select: { id: true },
+  });
+
+  for (const { id } of own) {
     const payable = Number(formData.get(`payable-${id}`) ?? 0);
     const lop = Number(formData.get(`lop-${id}`) ?? 0);
     // A blank row is left alone rather than written as zero: zero payable
@@ -52,11 +61,13 @@ export default async function AttendancePage({
   searchParams: Promise<{ period?: string }>;
 }) {
   const params = await searchParams;
+  const user = await requireUser();
   const period = params.period ? monthFromValue(params.period) : monthStart(new Date());
   const total = daysInMonth(period);
 
   const employees = await db.employee.findMany({
     where: {
+      companyId: user.companyId,
       status: { in: ["ACTIVE", "ON_NOTICE"] },
       joinedOn: { lte: new Date(period.getFullYear(), period.getMonth() + 1, 0) },
     },

@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { canSeeSalaries, getUser } from "@/lib/auth";
 import { bankAdviceCsv } from "@/lib/run";
 
 /*
@@ -7,15 +8,23 @@ import { bankAdviceCsv } from "@/lib/run";
   A route rather than a button that builds the file in the browser: the
   figures must come from the payslips as issued, not from anything
   recomputed on a page that may have been open for an hour.
+
+  A route handler gets no protection from the page it was linked from,
+  so it checks the session itself. This file is every salary in the
+  company in one download.
 */
 
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const user = await getUser();
+  if (!user) return new Response("Sign in first", { status: 401 });
+  if (!canSeeSalaries(user.role)) return new Response("Not allowed", { status: 403 });
+
   const { id } = await params;
-  const run = await db.payrollRun.findUnique({
-    where: { id },
+  const run = await db.payrollRun.findFirst({
+    where: { id, companyId: user.companyId },
     include: { payslips: { orderBy: { employeeCode: "asc" } } },
   });
 
@@ -27,7 +36,7 @@ export async function GET(
   // IFSC lives on the employee, not on the payslip: it is a routing
   // detail rather than part of the pay record.
   const employees = await db.employee.findMany({
-    where: { code: { in: run.payslips.map((p) => p.employeeCode) } },
+    where: { companyId: user.companyId, code: { in: run.payslips.map((p) => p.employeeCode) } },
     select: { code: true, bankIfsc: true },
   });
   const ifsc = Object.fromEntries(employees.map((e) => [e.code, e.bankIfsc]));

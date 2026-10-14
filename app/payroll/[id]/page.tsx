@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { canSeeSalaries, requireUser } from "@/lib/auth";
 import { rupees } from "@/lib/money";
 import { fmtDate, fmtMonth, tone } from "@/lib/format";
 import { previewRun, totalsOf, type ComputedRow } from "@/lib/run";
@@ -27,12 +28,14 @@ const MATERIAL = 0.1; // 10%
 
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const run = await db.payrollRun.findUnique({
-    where: { id },
+  const user = await requireUser();
+  const run = await db.payrollRun.findFirst({
+    where: { id, companyId: user.companyId },
     include: { company: true, payslips: { orderBy: { employeeCode: "asc" } } },
   });
   if (!run) notFound();
 
+  const maySeePay = canSeeSalaries(user.role);
   const isDraft = run.status === "DRAFT";
 
   // Draft: computed live. Processed: read back, exactly as issued.
@@ -79,7 +82,10 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   // Last month's figures, to compare against.
   const previousPeriod = new Date(run.period.getFullYear(), run.period.getMonth() - 1, 1);
   const previous = await db.payslip.findMany({
-    where: { period: previousPeriod, run: { status: { in: ["PROCESSED", "PAID"] } } },
+    where: {
+      period: previousPeriod,
+      run: { status: { in: ["PROCESSED", "PAID"] }, companyId: user.companyId },
+    },
   });
   const lastMonth = Object.fromEntries(previous.map((p) => [p.employeeCode, p.netPaise]));
 
@@ -106,12 +112,12 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             {/* Printing is the browser's job; this is a reminder, not a control. */}
             Ctrl+P to print the register
           </button>
-          {run.status !== "DRAFT" && run.status !== "CANCELLED" && (
+          {maySeePay && run.status !== "DRAFT" && run.status !== "CANCELLED" && (
             <a className="btn-light" href={`/payroll/${run.id}/bank`}>
               Bank advice CSV
             </a>
           )}
-          {isDraft && (
+          {maySeePay && isDraft && (
             <form action={process}>
               <input type="hidden" name="runId" value={run.id} />
               <button className="btn" type="submit" disabled={totals.count === 0}>
@@ -119,7 +125,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
               </button>
             </form>
           )}
-          {run.status === "PROCESSED" && (
+          {maySeePay && run.status === "PROCESSED" && (
             <form action={markPaid}>
               <input type="hidden" name="runId" value={run.id} />
               <button className="btn" type="submit">Mark paid</button>
@@ -161,7 +167,9 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         </section>
       )}
 
-      <div className="card overflow-x-auto">
+      {/* A viewer gets the totals above and nothing per person below. */}
+      {maySeePay ? (
+        <div className="card overflow-x-auto">
         <table className="w-full min-w-[900px]">
           <thead className="bg-[color:var(--color-paper)]">
             <tr>
@@ -238,8 +246,13 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           </tfoot>
         </table>
       </div>
+      ) : (
+        <p className="card p-6 text-[13px] text-[color:var(--color-muted)]">
+          Your account sees payroll totals, not what any individual is paid.
+        </p>
+      )}
 
-      {run.status === "PROCESSED" && (
+      {maySeePay && run.status === "PROCESSED" && (
         <form action={cancelRun} className="no-print card flex flex-wrap items-end gap-3 p-4">
           <input type="hidden" name="runId" value={run.id} />
           <div className="min-w-[280px] flex-1">

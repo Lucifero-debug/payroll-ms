@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { canSeeSalaries, requireUser } from "@/lib/auth";
 import { rupees } from "@/lib/money";
 import { fmtDate, fmtMonth, tone, ymd } from "@/lib/format";
 import { computeRow, monthStart, ratesFor, structureFor } from "@/lib/run";
@@ -19,10 +20,16 @@ export const dynamic = "force-dynamic";
 
 export default async function EmployeePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const user = await requireUser();
+  // A viewer has no business on an individual's page at all: their pay
+  // is the whole content of it.
+  if (!canSeeSalaries(user.role)) notFound();
   const period = monthStart(new Date());
 
-  const employee = await db.employee.findUnique({
-    where: { id },
+  const employee = await db.employee.findFirst({
+    // Scoped by company, so a guessed id from another tenant is simply
+    // not found rather than quietly readable.
+    where: { id, companyId: user.companyId },
     include: {
       salaryStructures: {
         include: { components: { include: { component: true } } },

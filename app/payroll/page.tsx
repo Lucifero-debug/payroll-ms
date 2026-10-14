@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
 import { rupees } from "@/lib/money";
 import { fmtDate, fmtMonth, monthValue, tone } from "@/lib/format";
 import { monthStart } from "@/lib/run";
@@ -8,7 +9,12 @@ import { createRun } from "./actions";
 export const dynamic = "force-dynamic";
 
 export default async function PayrollPage() {
-  const runs = await db.payrollRun.findMany({ orderBy: { period: "desc" }, take: 24 });
+  const user = await requireUser();
+  const runs = await db.payrollRun.findMany({
+    where: { companyId: user.companyId },
+    orderBy: { period: "desc" },
+    take: 24,
+  });
   const period = monthStart(new Date());
 
   return (

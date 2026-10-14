@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
+import { requirePayroll } from "@/lib/auth";
 import { monthFromValue } from "@/lib/format";
 import { processRun } from "@/lib/run";
 
@@ -12,40 +13,49 @@ import { processRun } from "@/lib/run";
   The one rule worth defending: a PROCESSED run is never recalculated.
   It can be cancelled, with a reason, and a fresh one created; it cannot
   quietly change under a payslip somebody has already been sent.
+
+  Every action starts by loading the run WITHIN the signed-in company,
+  so an id from another tenant is simply not found.
 */
 
+async function ownRun(runId: string, companyId: string) {
+  const run = await db.payrollRun.findFirst({ where: { id: runId, companyId } });
+  if (!run) throw new Error("Run not found");
+  return run;
+}
+
 export async function createRun(formData: FormData) {
+  const user = await requirePayroll();
   const period = monthFromValue(String(formData.get("period")));
-  const company = await db.company.findFirst();
-  if (!company) throw new Error("No company set up");
 
   const existing = await db.payrollRun.findUnique({
-    where: { companyId_period: { companyId: company.id, period } },
+    where: { companyId_period: { companyId: user.companyId, period } },
   });
   if (existing) redirect(`/payroll/${existing.id}`);
 
   const run = await db.payrollRun.create({
-    data: { companyId: company.id, period, status: "DRAFT" },
+    data: { companyId: user.companyId, period, status: "DRAFT" },
   });
   redirect(`/payroll/${run.id}`);
 }
 
 export async function process(formData: FormData) {
-  const id = String(formData.get("runId"));
-  await processRun(id);
-  revalidatePath(`/payroll/${id}`);
+  const user = await requirePayroll();
+  const run = await ownRun(String(formData.get("runId")), user.companyId);
+  await processRun(run.id);
+  revalidatePath(`/payroll/${run.id}`);
 }
 
 export async function markPaid(formData: FormData) {
-  const id = String(formData.get("runId"));
-  const run = await db.payrollRun.findUnique({ where: { id } });
-  if (run?.status !== "PROCESSED") throw new Error("Only a processed run can be marked paid");
+  const user = await requirePayroll();
+  const run = await ownRun(String(formData.get("runId")), user.companyId);
+  if (run.status !== "PROCESSED") throw new Error("Only a processed run can be marked paid");
 
   await db.payrollRun.update({
-    where: { id },
+    where: { id: run.id },
     data: { status: "PAID", paidOn: new Date() },
   });
-  revalidatePath(`/payroll/${id}`);
+  revalidatePath(`/payroll/${run.id}`);
 }
 
 /**
@@ -56,11 +66,15 @@ export async function markPaid(formData: FormData) {
  * and records, not a side effect of pressing Calculate again.
  */
 export async function cancelRun(formData: FormData) {
+  const user = await requirePayroll();
   const id = String(formData.get("runId"));
   const reason = String(formData.get("reason") ?? "").trim();
   if (!reason) throw new Error("Give a reason: cancelling a processed payroll is not a quiet act");
 
-  const run = await db.payrollRun.findUnique({ where: { id }, include: { payslips: true } });
+  const run = await db.payrollRun.findFirst({
+    where: { id, companyId: user.companyId },
+    include: { payslips: true },
+  });
   if (!run) throw new Error("Run not found");
   if (run.status === "PAID") {
     throw new Error("This payroll has been paid. Correct it with an adjustment next month instead.");

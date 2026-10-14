@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { canSeeSalaries, requireUser } from "@/lib/auth";
 import { rupees } from "@/lib/money";
 import { fmtDate, tone } from "@/lib/format";
 import { monthStart, structureFor } from "@/lib/run";
@@ -13,11 +14,17 @@ export default async function EmployeesPage({
   searchParams: Promise<{ new?: string; status?: string }>;
 }) {
   const params = await searchParams;
-  const showForm = params.new === "1";
+  const user = await requireUser();
+  const showForm = params.new === "1" && canSeeSalaries(user.role);
   const status = params.status?.toUpperCase();
 
   const employees = await db.employee.findMany({
-    where: status && status !== "ALL" ? { status: status as "ACTIVE" } : { status: { not: "EXITED" } },
+    where: {
+      companyId: user.companyId,
+      ...(status && status !== "ALL"
+        ? { status: status as "ACTIVE" }
+        : { status: { not: "EXITED" } }),
+    },
     include: { salaryStructures: true },
     orderBy: { code: "asc" },
   });
@@ -140,7 +147,9 @@ export default async function EmployeesPage({
                   <td className="td">{employee.department ?? "—"}</td>
                   <td className="td whitespace-nowrap">{fmtDate(employee.joinedOn)}</td>
                   <td className="td num">
-                    {monthly ? (
+                    {!canSeeSalaries(user.role) ? (
+                      <span className="text-[color:var(--color-muted)]">hidden</span>
+                    ) : monthly ? (
                       rupees(monthly)
                     ) : (
                       <span className="text-[color:var(--color-warn)]">no structure</span>

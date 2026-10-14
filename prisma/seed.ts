@@ -1,4 +1,5 @@
 import { db } from "../lib/db.js";
+import { hashPassword } from "../lib/auth.js";
 
 /*
   Seed: one company, the standard salary components, the statutory rates
@@ -25,6 +26,11 @@ const monthStart = (offset = 0) => {
 };
 
 async function main() {
+  /*
+    Children before parents, or Postgres refuses the delete: a company
+    cannot go while a user, an employee or a component still points at
+    it. Users were added last and belong above Company here.
+  */
   await db.$transaction([
     db.payslipLine.deleteMany(),
     db.payslip.deleteMany(),
@@ -39,8 +45,8 @@ async function main() {
     db.employee.deleteMany(),
     db.professionalTaxSlab.deleteMany(),
     db.statutorySettings.deleteMany(),
-    db.company.deleteMany(),
     db.user.deleteMany(),
+    db.company.deleteMany(),
   ]);
 
   const company = await db.company.create({
@@ -108,7 +114,7 @@ async function main() {
       { code: "CONVEYANCE", name: "Conveyance", kind: "EARNING" as const, pfWage: false, esiWage: true, prorated: true, position: 40 },
       { code: "SPECIAL", name: "Special allowance", kind: "EARNING" as const, pfWage: false, esiWage: true, prorated: true, position: 50 },
       { code: "LTA", name: "Leave travel allowance", kind: "EARNING" as const, pfWage: false, esiWage: true, prorated: true, position: 60 },
-    ].map((data) => db.salaryComponent.create({ data })),
+    ].map((data) => db.salaryComponent.create({ data: { ...data, companyId: company.id } })),
   );
   const byCode = Object.fromEntries(components.map((c) => [c.code, c.id]));
 
@@ -219,17 +225,48 @@ async function main() {
     },
   });
 
+  /*
+    Sign-ins for the demo database.
+
+    `admin` / `admin123` is a convenience for local work ONLY. It is
+    short, guessable, and the account it opens can see every salary in
+    the company. A real installation goes through /setup, which demands
+    ten characters for exactly that reason, and this seed must never be
+    run against a real database.
+  */
+  const demoPassword = "admin123";
   await db.user.createMany({
     data: [
-      { name: "Anita Rao", email: "anita@harbour.example", role: "OWNER" },
-      { name: "Vikas Sharma", email: "vikas@harbour.example", role: "PAYROLL" },
+      {
+        companyId: company.id,
+        name: "Anita Rao",
+        email: "admin",
+        role: "OWNER",
+        passwordHash: hashPassword(demoPassword),
+      },
+      {
+        companyId: company.id,
+        name: "Vikas Sharma",
+        email: "payroll",
+        role: "PAYROLL",
+        passwordHash: hashPassword(demoPassword),
+      },
+      {
+        companyId: company.id,
+        name: "Deepa Nair",
+        email: "viewer",
+        role: "VIEWER",
+        passwordHash: hashPassword(demoPassword),
+      },
     ],
   });
 
   console.log(
     `Seeded: ${company.name}, ${employees.length} employees, attendance for ` +
       `${period.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}, ` +
-      `1 loan, 1 reimbursement. Statutory rates are 2026 defaults: verify before real use.`,
+      `1 loan, 1 reimbursement.\n` +
+      `Sign in: admin / ${demoPassword} (owner). Also "payroll" and "viewer", same password.\n` +
+      `Statutory rates are 2026 defaults: verify before real use.`,
   );
 }
 

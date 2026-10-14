@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { canSeeSalaries, requireUser } from "@/lib/auth";
 import { rupees, rupeesShort } from "@/lib/money";
 import { fmtMonth, tone } from "@/lib/format";
 import { monthStart, previewRun, totalsOf } from "@/lib/run";
@@ -23,13 +24,16 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 }
 
 export default async function Dashboard() {
-  const company = await db.company.findFirst();
+  // Everything below is scoped to this user's company. No screen in this
+  // app looks anything up without a company id from the session.
+  const user = await requireUser();
+  const company = await db.company.findUnique({ where: { id: user.companyId } });
   if (!company) {
     return (
       <div className="card p-6">
-        <h1 className="text-[18px] font-semibold">No company yet</h1>
+        <h1 className="text-[18px] font-semibold">Company not found</h1>
         <p className="mt-2 text-[14px] text-[color:var(--color-muted)]">
-          Run <code>npm run db:seed</code> to load a sample company, or build the setup screen.
+          This account points at a company that no longer exists.
         </p>
       </div>
     );
@@ -79,7 +83,8 @@ export default async function Dashboard() {
         />
       </div>
 
-      {problems.length > 0 && (
+      {/* A viewer sees the shape of the payroll, never a person's pay. */}
+      {canSeeSalaries(user.role) && problems.length > 0 && (
         <section className="card">
           <h2 className="border-b border-[color:var(--color-line)] px-4 py-3 text-[14px] font-semibold">
             Needs attention before processing
