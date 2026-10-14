@@ -1,0 +1,475 @@
+// Payroll MS: monthly payroll for a small Indian business.
+//
+// Two rules run through this whole schema.
+//
+// 1. Money is paise, stored as Int. Never Float. A salary that is one
+//    paisa out is a conversation with an employee, and twelve of those a
+//    year is a reputation.
+//
+// 2. A processed payroll run is a historical record, not a view. Every
+//    component, rate and total is COPIED onto the payslip when the run is
+//    processed. Change an employee's salary in May and April's payslip
+//    must still show April's numbers, because a payslip is a document
+//    someone shows a bank.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------
+// The business
+// ---------------------------------------------------------------------
+
+model Company {
+  id       String  @id @default(cuid())
+  name     String
+  address  String?
+  city     String?
+  /** Decides professional tax, which is a state subject. */
+  state    String
+  pan      String?
+  tan      String? // needed on TDS returns
+  gstin    String?
+  pfCode   String? // EPFO establishment code
+  esiCode  String? // ESIC code
+  logoUrl  String?
+
+  /** Day of the month salaries are paid. Used for due-date reminders. */
+  payDay   Int     @default(1)
+
+  employees  Employee[]
+  payrollRuns PayrollRun[]
+  settings    StatutorySettings?
+}
+
+/*
+  Statutory rates, in the database rather than in code.
+
+  Every one of these changes by government notification, usually with
+  weeks of notice, and a payroll product that needs a deploy to follow a
+  gazette is a payroll product that goes wrong in March.
+
+  VERIFY every default against the current notification before going live
+  with a real client; the seed carries the rates as of 2026.
+*/
+model StatutorySettings {
+  id        String  @id @default(cuid())
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String  @unique
+
+  // Provident fund
+  pfEnabled        Boolean @default(true)
+  pfEmployeeRate   Int     @default(1200) // basis points: 12.00%
+  pfEmployerRate   Int     @default(1200)
+  pfPensionRate    Int     @default(833) //  8.33% of wage, into EPS
+  /** Wages above this need not attract PF. Paise: ₹15,000. */
+  pfWageCeiling    Int     @default(1500000)
+  /** Most small firms cap at the ceiling; some pay PF on full basic. */
+  pfCapAtCeiling   Boolean @default(true)
+  pfAdminRate      Int     @default(50) // 0.50%, employer only
+  pfAdminMinimum   Int     @default(50000) // ₹500
+
+  // Employees' State Insurance
+  esiEnabled       Boolean @default(true)
+  esiEmployeeRate  Int     @default(75) //  0.75%
+  esiEmployerRate  Int     @default(325) // 3.25%
+  /** Gross at or below this is covered. Paise: ₹21,000. */
+  esiWageCeiling   Int     @default(2100000)
+
+  // Professional tax: a state subject, so the slabs live in their own
+  // table. Delhi, for instance, has none at all.
+  ptEnabled        Boolean @default(true)
+
+  // Gratuity, for the full-and-final calculation
+  gratuityEnabled  Boolean @default(true)
+  gratuityMinYears Int     @default(5)
+
+  ptSlabs ProfessionalTaxSlab[]
+}
+
+/** One row per band, per state. Compared against monthly gross. */
+model ProfessionalTaxSlab {
+  id         String            @id @default(cuid())
+  settings   StatutorySettings @relation(fields: [settingsId], references: [id], onDelete: Cascade)
+  settingsId String
+  state      String
+  fromPaise  Int
+  /** null means "and above". */
+  toPaise    Int?
+  amountPaise Int
+  /** Some states charge extra in one month (Maharashtra, February). */
+  month      Int?
+
+  @@index([settingsId, state])
+}
+
+// ---------------------------------------------------------------------
+// People
+// ---------------------------------------------------------------------
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_NOTICE
+  EXITED
+  ON_LEAVE // long unpaid leave: on the books, not in the payroll
+}
+
+enum PayType {
+  MONTHLY // salaried
+  DAILY //   wage per day worked
+  HOURLY
+}
+
+model Employee {
+  id        String  @id @default(cuid())
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
+  /** EMP-0001. What people say aloud; never show a cuid. */
+  code      String  @unique
+
+  fullName  String // exactly as on the bank account and PAN
+  email     String?
+  phone     String?
+  dateOfBirth DateTime?
+  gender    String?
+
+  designation String?
+  department  String?
+  location    String?
+  /** Decides professional tax when staff work in different states. */
+  state       String?
+
+  joinedOn   DateTime
+  exitedOn   DateTime?
+  status     EmployeeStatus @default(ACTIVE)
+  payType    PayType        @default(MONTHLY)
+
+  // Statutory identifiers. Stored as given; validation is the operator's
+  // job, because a wrong PAN rejects a whole TDS return.
+  pan        String?
+  aadhaarLast4 String? // never the full number
+  uan        String? // PF universal account number
+  pfNumber   String?
+  esiNumber  String?
+
+  // Where the money goes
+  bankName      String?
+  bankAccount   String?
+  bankIfsc      String?
+
+  /** Opted out of PF because they were never a member and earn above the ceiling. */
+  pfExempt   Boolean @default(false)
+  /** Old regime or new. Decides how TDS is estimated. */
+  taxRegime  TaxRegime @default(NEW)
+
+  salaryStructures SalaryStructure[]
+  payslips         Payslip[]
+  attendance       Attendance[]
+  loans            Loan[]
+  reimbursements   Reimbursement[]
+  settlement       Settlement?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId, status])
+}
+
+enum TaxRegime {
+  OLD
+  NEW
+}
+
+// ---------------------------------------------------------------------
+// What someone is paid
+//
+// A structure is dated and never edited after a payroll uses it: a raise
+// creates a new row with a new effectiveFrom. That is what makes arrears
+// calculable and last year's payslips still true.
+// ---------------------------------------------------------------------
+
+model SalaryStructure {
+  id         String   @id @default(cuid())
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId String
+  effectiveFrom DateTime
+  /** Cost to company per year, for offer letters and reports. */
+  ctcAnnualPaise Int?
+  note       String? // "Annual increment", "Promotion to senior"
+
+  components StructureComponent[]
+  createdAt  DateTime @default(now())
+
+  @@index([employeeId, effectiveFrom])
+}
+
+enum ComponentKind {
+  EARNING
+  DEDUCTION
+  /** Paid by the employer on top of gross: PF, ESI, gratuity provision. */
+  EMPLOYER_CONTRIBUTION
+}
+
+enum ComponentCalc {
+  FIXED //        a flat monthly amount
+  PERCENT_BASIC // HRA at 40% or 50% of basic
+  PERCENT_CTC
+  BALANCE //      whatever is left of CTC after the rest: "special allowance"
+}
+
+model SalaryComponent {
+  id        String        @id @default(cuid())
+  /** BASIC, HRA, CONVEYANCE, SPECIAL, LTA. Stable, used in code. */
+  code      String        @unique
+  name      String
+  kind      ComponentKind
+  /** Counts towards PF wages (basic and dearness allowance normally do). */
+  pfWage    Boolean       @default(false)
+  /** Counts towards ESI gross. */
+  esiWage   Boolean       @default(true)
+  /** Reduced when someone is absent without leave. */
+  prorated  Boolean       @default(true)
+  /** Sort order on the payslip. */
+  position  Int           @default(0)
+
+  inStructures StructureComponent[]
+  inPayslips   PayslipLine[]
+}
+
+model StructureComponent {
+  id          String          @id @default(cuid())
+  structure   SalaryStructure @relation(fields: [structureId], references: [id], onDelete: Cascade)
+  structureId String
+  component   SalaryComponent @relation(fields: [componentId], references: [id])
+  componentId String
+  calc        ComponentCalc   @default(FIXED)
+  /** Monthly amount for FIXED; basis points for the percentage kinds. */
+  value       Int
+
+  @@unique([structureId, componentId])
+}
+
+// ---------------------------------------------------------------------
+// Inputs for a month
+// ---------------------------------------------------------------------
+
+/**
+ * One row per employee per month: the attendance summary payroll needs.
+ *
+ * Deliberately a summary, not a punch log. Small firms keep attendance in
+ * a register, a biometric machine's export, or someone's head; asking
+ * them to move all of that here first is how payroll software goes
+ * unused.
+ */
+model Attendance {
+  id         String   @id @default(cuid())
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId String
+  /** First day of the month this covers. */
+  period     DateTime
+
+  payableDays Float // days in the month, or the contracted days
+  workedDays  Float
+  /** Loss of pay: the number that actually reduces the salary. */
+  lopDays     Float @default(0)
+  overtimeHours Float @default(0)
+  note        String?
+
+  @@unique([employeeId, period])
+}
+
+enum LoanStatus {
+  ACTIVE
+  CLOSED
+  WRITTEN_OFF
+}
+
+/** Salary advances and loans, recovered in instalments from payroll. */
+model Loan {
+  id         String     @id @default(cuid())
+  employee   Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId String
+  reason     String
+  principalPaise Int
+  instalmentPaise Int
+  recoveredPaise  Int        @default(0)
+  startPeriod DateTime
+  status     LoanStatus @default(ACTIVE)
+  note       String?
+
+  @@index([employeeId, status])
+}
+
+enum ReimbursementStatus {
+  CLAIMED
+  APPROVED
+  PAID
+  REJECTED
+}
+
+/** Paid with salary but not part of it, and not taxed as salary. */
+model Reimbursement {
+  id         String              @id @default(cuid())
+  employee   Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId String
+  claimedOn  DateTime            @default(now())
+  period     DateTime? //         the payroll month it is paid in
+  description String
+  amountPaise Int
+  status     ReimbursementStatus @default(CLAIMED)
+
+  @@index([employeeId, status])
+}
+
+// ---------------------------------------------------------------------
+// The payroll run
+// ---------------------------------------------------------------------
+
+enum RunStatus {
+  DRAFT //      being prepared; recalculated freely
+  PROCESSED //  numbers frozen, payslips exist
+  PAID //       bank transfer done
+  CANCELLED
+}
+
+model PayrollRun {
+  id        String    @id @default(cuid())
+  company   Company   @relation(fields: [companyId], references: [id])
+  companyId String
+  /** First day of the month being paid. */
+  period    DateTime
+  status    RunStatus @default(DRAFT)
+
+  processedOn DateTime?
+  paidOn      DateTime?
+  processedBy String?
+  note        String?
+
+  // Totals, stored at processing so a report never has to re-add
+  // thousands of lines, and never disagrees with the payslips.
+  grossPaise      Int @default(0)
+  deductionsPaise Int @default(0)
+  netPaise        Int @default(0)
+  employerPaise   Int @default(0) // PF, ESI and the rest, employer side
+  headcount       Int @default(0)
+
+  payslips Payslip[]
+
+  @@unique([companyId, period])
+  @@index([status])
+}
+
+/**
+ * One employee's pay for one month.
+ *
+ * Everything here is a copy taken at processing: the structure, the
+ * rates, the attendance. Nothing is looked up live, so a payslip issued
+ * in April still shows April even after a raise, a rate change or a
+ * correction to attendance.
+ */
+model Payslip {
+  id         String     @id @default(cuid())
+  run        PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId      String
+  employee   Employee   @relation(fields: [employeeId], references: [id])
+  employeeId String
+  period     DateTime
+
+  // Copied from the employee at processing, because people leave and
+  // records change, and a payslip must stay readable years later.
+  employeeCode String
+  fullName     String
+  designation  String?
+  department   String?
+  pan          String?
+  uan          String?
+  bankAccount  String?
+
+  payableDays Float
+  lopDays     Float @default(0)
+
+  grossPaise      Int
+  deductionsPaise Int
+  netPaise        Int
+
+  // Broken out as well as in the lines, because every statutory return
+  // and reconciliation asks for exactly these.
+  pfEmployeePaise Int @default(0)
+  pfEmployerPaise Int @default(0)
+  pfPensionPaise  Int @default(0)
+  esiEmployeePaise Int @default(0)
+  esiEmployerPaise Int @default(0)
+  ptPaise          Int @default(0)
+  tdsPaise         Int @default(0)
+  loanPaise        Int @default(0)
+  reimbursementPaise Int @default(0)
+
+  lines PayslipLine[]
+
+  @@unique([runId, employeeId])
+  @@index([employeeId, period])
+}
+
+model PayslipLine {
+  id          String           @id @default(cuid())
+  payslip     Payslip          @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+  payslipId   String
+  component   SalaryComponent? @relation(fields: [componentId], references: [id])
+  componentId String?
+
+  /** Copied, so a renamed component does not rewrite history. */
+  label  String
+  kind   ComponentKind
+  amountPaise Int
+  /** Set when the line is back pay for an earlier month. */
+  arrearsForPeriod DateTime?
+  position Int @default(0)
+}
+
+// ---------------------------------------------------------------------
+// Leaving
+// ---------------------------------------------------------------------
+
+model Settlement {
+  id         String   @id @default(cuid())
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId String   @unique
+  lastWorkingDay DateTime
+
+  // Each part is stored because each is argued about separately.
+  salaryDuePaise      Int @default(0)
+  leaveEncashPaise    Int @default(0)
+  gratuityPaise       Int @default(0)
+  bonusPaise          Int @default(0)
+  noticeRecoveryPaise Int @default(0)
+  loanRecoveryPaise   Int @default(0)
+  otherDeductionPaise Int @default(0)
+  netPaise            Int @default(0)
+
+  settledOn DateTime?
+  note      String?
+}
+
+// ---------------------------------------------------------------------
+// Who uses the software
+// ---------------------------------------------------------------------
+
+enum UserRole {
+  OWNER //    sees everything, including every salary
+  PAYROLL //  runs payroll, sees salaries
+  VIEWER //   reports only, no individual salaries
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  role      UserRole @default(PAYROLL)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}

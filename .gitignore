@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js build output
+.next/
+out/
+build/
+dist/
+
+# Secrets. Everything except the example, which is meant to be committed.
+.env
+.env.*
+!.env.example
+
+# Prisma's generated client
+/prisma/generated/
+/lib/generated/
+
+# Logs and local junk
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Vercel
+.vercel
+*.tsbuildinfo
+next-env.d.ts

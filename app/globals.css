@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/*
+  Tailwind v4: configured here, not in a config file.
+
+  Payroll is read, not admired. Ink on paper, one blue for actions, and
+  colour kept for the two things that need attention: a figure that moved
+  a lot, and a run that is still a draft.
+*/
+
+@theme {
+  --color-ink: #14171c;
+  --color-muted: #646c79;
+  --color-line: #e3e6ea;
+  --color-paper: #f7f8fa;
+  --color-brand: #1d5fd6;
+  --color-good: #15803d;
+  --color-warn: #b45309;
+  --color-bad: #b91c1c;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-[color:var(--color-line)] bg-white;
+  }
+  .label {
+    @apply mb-1 block text-[12px] font-medium text-[color:var(--color-muted)];
+  }
+  .input {
+    @apply h-10 w-full rounded-md border border-[color:var(--color-line)] bg-white px-3 text-[14px]
+           outline-none focus:border-[color:var(--color-brand)];
+  }
+  .btn {
+    @apply inline-flex h-10 items-center justify-center rounded-md bg-[color:var(--color-ink)] px-4
+           text-[14px] font-medium text-white hover:bg-black disabled:opacity-50;
+  }
+  .btn-light {
+    @apply inline-flex h-10 items-center justify-center rounded-md border border-[color:var(--color-line)]
+           bg-white px-4 text-[14px] font-medium hover:bg-[color:var(--color-paper)];
+  }
+  .pill {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium;
+  }
+  .th {
+    @apply px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-[color:var(--color-muted)];
+  }
+  .td {
+    @apply border-t border-[color:var(--color-line)] px-3 py-2.5 align-top text-[14px];
+  }
+  /*
+    Figures right, headings over them, and the same digit width everywhere
+    so a column of money reads as a column. A numeric heading that is not
+    right-aligned over a right-aligned column makes a correct report look
+    wrong, which is its own kind of bug.
+  */
+  .num {
+    @apply text-right tabular-nums;
+  }
+  .th.num {
+    @apply text-right;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+  }
+  @page {
+    size: A4;
+    margin: 12mm 10mm;
+  }
+}
